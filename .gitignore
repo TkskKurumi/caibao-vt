@@ -1,0 +1,9 @@
+blivedm
+assets
+.vscode
+sherpa_ncnn_models
+src/.tmp
+__pycache__
+configs
+*.ps1
+*.txt
