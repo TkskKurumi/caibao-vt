@@ -2,314 +2,293 @@
 
 ## 概述
 
-本文档整理如何控制 Live2D 模型（通过 VTube Studio API 或第三方 Python 接口）实现：
+本文档描述如何通过 VTube Studio API 控制 Live2D 模型，实现：
 1. **待机动作**：让模型自然地进行随机动作，避免定着不动
 2. **发言动作**：与 TTS 语音同步，控制张嘴闭嘴和情感表达
 
-## 性能考虑：FPS 和 CPU 占用
+## 性能验证结果
 
-### 关键问题
+### 已验证
 
-1. **参数控制能否达到 >60 FPS？**
-   - 需要确认 VTube Studio API 的调用频率限制
-   - 高频率调用是否会被限制或丢弃
+- [x] **30Hz 更新频率足够流畅** - 经测试，30Hz 的 API 调用频率已能提供流畅的动画效果
+- [x] **VTube Studio 不会自动插值** - 需要客户端实现平滑处理
+- [x] **InjectParameterDataRequest 可用** - 可通过 pyvts 构造请求体控制参数
 
-2. **VTube Studio 是否会平滑插值？**
-   - 不确定 VTube Studio 是否会自动在两次 API 调用之间插值
-   - 如果不插值，参数突变会导致模型动作不流畅
+### 平滑处理
 
-3. **主程序高频率循环的 CPU 占用**
-   - >60 FPS 的循环会占用大量 CPU 资源
-   - 需要权衡流畅度和性能
+客户端平滑公式：
+```python
+smooth_val += (target - smooth_val) * min(1, smooth * fps)
+```
 
-### 待验证事项
-
-- [ ] VTube Studio API 的最大推荐调用频率
-- [ ] VTube Studio 是否自动插值处理参数变化
-- [ ] 高频率 API 调用是否会被限流或丢弃
-- [ ] 60 FPS 循环对 CPU 的实际占用
-
-### 建议的测试方案
-
-1. **测试插值行为**：
-   - 以不同频率（10Hz, 30Hz, 60Hz, 100Hz）调用参数设置 API
-   - 观察模型动作是否流畅
-   - 如果 30Hz 已经足够流畅，说明 VTube Studio 有插值
-
-2. **测试 CPU 占用**：
-   - 运行 60 FPS 循环，观察 CPU 占用
-   - 如果占用过高，考虑降低频率或使用固定动画
-
-3. **查阅 VTube Studio API 文档**：
-   - 确认是否有频率限制
-   - 确认是否有插值机制说明
+其中：
+- `smooth_val`: 当前平滑后的值
+- `target`: 目标值（从 Action 函数计算得到）
+- `smooth`: 平滑系数（0-1，越大越平滑）
+- `fps`: 更新频率
 
 ## VTube Studio API 能力
 
-VTube Studio 支持通过 API 控制 Live2D 模型，主要有两种方式：
+### 参数控制
 
-### 1. 播放固定动画
-- **优点**：简单好控制，Cubism Editor 可以可视化编辑动画
-- **缺点**：灵活性较低，需要预先编辑好所有动画
-- **性能**：无额外 CPU 占用（VTube Studio 内部处理）
-
-### 2. 设定参数值
-- **优点**：自由度更高，可以实时控制任何参数
-- **缺点**：需要程序不断更新参数（如嘴巴开合），实现复杂
-- **性能**：需要持续调用 API，频率未知，可能占用 CPU
-- **待确认**：VTube Studio 是否自动插值？是否需要客户端实现插值？
-
-## 待机动作控制
-
-### 目标
-- 让模型每隔一段时间进行随机动作
-- 避免循环动画，保持自然感
-- 不要定着不动
-
-### 控制参数
-主要控制以下参数（范围通常为 -1.0 到 1.0）：
-- `BodyX`：身体左右移动
-- `BodyY`：身体上下移动
-- `FaceX`：脸部左右转动
-- `FaceY`：脸部上下转动
-- `EyeX`：眼睛左右移动
-- `EyeY`：眼睛上下移动
-
-### 实现思路
-```python
-async def idle_loop():
-    while running:
-        # 每隔 2-5 秒随机设定参数
-        await asyncio.sleep(random.uniform(2, 5))
-        
-        # 随机设定参数值
-        params = {
-            "PARAM_BODY_X": random.uniform(-0.2, 0.2),
-            "PARAM_BODY_Y": random.uniform(-0.1, 0.1),
-            "PARAM_FACE_X": random.uniform(-0.3, 0.3),
-            "PARAM_FACE_Y": random.uniform(-0.2, 0.2),
-            "PARAM_EYE_X": random.uniform(-0.3, 0.3),
-            "PARAM_EYE_Y": random.uniform(-0.2, 0.2),
-        }
-        
-        await vts_api.set_parameters(params)
-        
-        # 参数保持一段时间后恢复默认
-        await asyncio.sleep(random.uniform(1, 3))
-        await vts_api.reset_parameters()
-```
-
-### 注意事项
-- 参数变化幅度不宜过大，避免突兀
-- 恢复默认参数时可以使用缓动效果
-- 避免与发言动画冲突（见下文）
-
-## 发言动作控制
-
-### 目标
-- 与 TTS 语音同步
-- 控制张嘴闭嘴（口型）
-- 控制情感表达（害羞、笑、生气等）
-
-### 方案对比
-
-#### 方案 A：固定动画
-- 预先在 Cubism Editor 中编辑好：
-  - 张嘴动画
-  - 闭嘴动画
-  - 各种情感动画（害羞、笑、生气等）
-- 播放时调用对应动画
-
-**优点**：
-- 实现简单
-- 动画质量高（可视化编辑）
-- 容易管理
-
-**缺点**：
-- 需要预先编辑所有动画
-- 口型同步可能不够精确
-
-#### 方案 B：参数控制
-- 实时控制参数：
-  - 嘴巴开合参数（根据语音音量或音素）
-  - 情感参数（害羞、笑、生气等）
-
-**优点**：
-- 灵活性高
-- 可以实现精确的口型同步
-
-**缺点**：
-- 实现复杂
-- 需要实时更新参数
-- 需要处理参数平滑过渡
-
-### 推荐方案：混合方案
-
-结合两种方案的优点：
-
-1. **情感表达**：使用固定动画
-   - 预先编辑好各种情感动画
-   - 根据 LLM 输出的 emotion 字段播放对应动画
-
-2. **口型同步**：使用参数控制
-   - 根据 TTS 音频的音量或音素实时控制嘴巴开合参数
-   - 可以使用简单的音量检测，或使用更复杂的音素识别
-
-### 实现思路
+通过 `requestSetMultiParameterValue` 批量设置多个参数值：
 
 ```python
-async def on_speech(speech_items):
-    for item in speech_items:
-        content = item["content"]
-        emotion = item["emotion"]
-        
-        # 1. 播放情感动画（如果有）
-        if emotion:
-            await vts_api.play_animation(f"emotion_{emotion}")
-        
-        # 2. 播放 TTS 音频，同时控制口型
-        audio_path = await tts_backend.generate(content)
-        
-        # 同步播放音频和控制口型
-        await sync_audio_and_mouth(audio_path)
-        
-        # 3. 播放结束后恢复默认状态
-        await vts_api.reset_parameters()
-        await vts_api.stop_animation()
-
-async def sync_audio_and_mouth(audio_path):
-    """播放音频并同步控制嘴巴开合"""
-    import soundfile as sf
-    import numpy as np
-    
-    # 读取音频文件
-    data, samplerate = sf.read(audio_path)
-    
-    # 分帧处理（每帧 20ms）
-    frame_size = int(samplerate * 0.02)
-    hop_size = int(samplerate * 0.01)
-    
-    for i in range(0, len(data) - frame_size, hop_size):
-        frame = data[i:i + frame_size]
-        
-        # 计算音量（RMS）
-        rms = np.sqrt(np.mean(frame ** 2))
-        
-        # 根据音量控制嘴巴开合参数
-        # 音量越大，嘴巴开得越大
-        mouth_open = min(1.0, rms / 0.1)  # 归一化
-        
-        await vts_api.set_parameter("PARAM_MOUTH_OPEN", mouth_open)
-        
-        await asyncio.sleep(0.01)  # 10ms
-    
-    # 最后关闭嘴巴
-    await vts_api.set_parameter("PARAM_MOUTH_OPEN", 0)
+class VTSRequest:
+    def requestSetMultiParameterValue(self, parameters: List[str], values: List[float]) -> dict:
+        """批量设置多个参数值"""
+        pass
 ```
 
-## 避免动画冲突
-
-### 问题
-- 待机动画和发言动画可能同时触发，导致冲突
-- 参数控制可能覆盖固定动画的效果
-
-### 解决方案
-
-#### 方案 1：优先级系统
-- 发言动画优先级 > 待机动画
-- 发言时暂停待机动画
-- 发言结束后恢复待机动画
+### 使用 pyvts 库
 
 ```python
-class Live2DController:
-    def __init__(self):
-        self.is_speaking = False
-        self.idle_task = None
-    
-    async def start_idle(self):
-        self.idle_task = asyncio.create_task(self.idle_loop())
-    
-    async def stop_idle(self):
-        if self.idle_task:
-            self.idle_task.cancel()
-            try:
-                await self.idle_task
-            except asyncio.CancelledError:
-                pass
-    
-    async def on_speech_start(self):
-        self.is_speaking = True
-        await self.stop_idle()
-    
-    async def on_speech_end(self):
-        self.is_speaking = False
-        await self.start_idle()
+import pyvts
+
+async def connect():
+    vts = pyvts.vts(host="localhost", port=8003)
+    await vts.connect()
+    await vts.request_authenticate_token()
+    return vts
+
+async def set_params(vts: pyvts.vts, params: List[str], values: List[float]):
+    request = vts.vts_request.requestSetMultiParameterValue(params, values)
+    await vts.request(request)
 ```
 
-#### 方案 2：参数分组
-- 待机动画只控制部分参数（如 BodyX, FaceX）
-- 发言动画控制其他参数（如 MouthOpen, Emotion）
-- 避免同时控制同一参数
+## 参数控制设计
 
-#### 方案 3：动画层
-- VTube Studio 支持动画层（Layer）
-- 待机动画放在底层
-- 发言动画放在顶层
-- 顶层动画可以覆盖底层动画
+### 核心思想
 
-## 推荐实现架构
+所有参数控制抽象为 **timestamp -> param_value** 的映射函数：
 
+- 闭嘴：常值函数 = 0
+- 张嘴闭嘴：周期函数
+- 脸红：常值函数
+- 随机动作：随机函数
+
+维护 `mapping(param_name) -> time_value_mapping_fn` 的状态，通过触发事件改变参数使用的函数。
+
+### Action 函数类型
+
+```python
+class ActionProtocol(Protocol):
+    def __call__(self, t: float) -> float:
+        pass
+
+class ActionConstant:
+    """常值函数"""
+    def __init__(self, v: float):
+        pass
+    def __call__(self, t: float) -> float:
+        pass
+
+class ActionLoop:
+    """循环函数，按时间插值"""
+    def __init__(self, values: List[float], durations: List[float]):
+        pass
+    def __call__(self, t: float) -> float:
+        pass
+
+class ActionRand:
+    """随机函数，生成随机值并插值"""
+    def __init__(self, v_min: float, v_max: float, dur_min: float, dur_max: float, t_interp: float):
+        pass
+    def __call__(self, t: float) -> float:
+        pass
+
+class ActionStatus:
+    """参数 -> 动作函数映射"""
+    
+    def __init__(self, map: Dict[str, ActionProtocol]):
+        pass
+    
+    @classmethod
+    def from_config(cls, cfg: List[Dict], default: "ActionStatus" = None) -> "ActionStatus":
+        """从配置文件创建 ActionStatus
+        
+        支持的类型：
+        - constant: 常值
+        - loop: 循环插值
+        - random: 随机值
+        - reset: 重置为默认值
+        """
+        pass
+    
+    def update(self, other: "ActionStatus") -> None:
+        """更新参数映射"""
+        pass
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Live2DController                          │
-│  ┌─────────────────┐    ┌─────────────────┐                │
-│  │  IdleController │    │ SpeechController│                │
-│  │  (待机控制)     │    │ (发言控制)      │                │
-│  └────────┬────────┘    └────────┬────────┘                │
-│           │                      │                          │
-│           └──────────┬───────────┘                          │
-│                      ↓                                      │
-│              ┌───────────────┐                              │
-│              │ VTS API Client│                              │
-│              └───────────────┘                              │
-└─────────────────────────────────────────────────────────────┘
 
-IdleController:
-  - 定期随机参数
-  - 发言时暂停
+### 配置文件格式
 
-SpeechController:
-  - 播放情感动画
-  - 同步音频和口型
-  - 发言结束后恢复待机
+```yaml
+emotion:
+  fps: 40              # VTS 参数更新频率
+  smooth: 1            # 平滑系数
+  default:             # 默认动作（待机）
+    - params: [MouthOpen]
+      type: constant
+      value: 0
+    - params: [FaceAngleX, FaceAngleY]
+      type: random
+      range: [-30, 30]
+      duration: [3, 7]
+      interp: 0.5
+  speech:              # 发言时的动作
+    common:            # 所有 emotion 通用
+      on_start:        # 发言开始时触发
+        - params: [MouthOpen]
+          type: loop
+          value: [0.0, 1.0]
+          duration: [0.3, 0.3]
+      on_end:          # 发言结束时触发
+        - params: [MouthOpen]
+          type: reset
+    happy:             # 特定 emotion
+      on_start:
+        - params: [MouthSmile]
+          type: constant
+          value: 1
 ```
 
-## 待办事项
+### Action 类型说明
 
-1. **研究 VTube Studio API**：
-   - 确认支持的参数列表
-   - 确认动画播放 API
-   - 确认参数设置 API
+| 类型 | 说明 | 配置参数 |
+|------|------|----------|
+| `constant` | 常值函数 | `value: float` |
+| `loop` | 循环插值 | `value: List[float]`, `duration: List[float]` |
+| `random` | 随机值 | `range: [min, max]`, `duration: [min, max]`, `interp: float` |
+| `reset` | 重置为默认值 | 无 |
 
-2. **选择第三方库**：
-   - 查找现有的 VTube Studio Python 接口
-   - 评估是否满足需求
+## AudioWithVTS 实现
 
-3. **实现待机控制**：
-   - 实现随机参数控制
-   - 测试自然度
+### 架构
 
-4. **实现发言控制**：
-   - 实现情感动画播放
-   - 实现口型同步（先简单音量检测，后考虑音素识别）
+```mermaid
+classDiagram
+    class AudioWithVTS {
+        +vts_fps: int
+        +vts_smooth: float
+        +vts_act_default: ActionStatus
+        +vts_act_emo_start: Dict~str, ActionStatus~
+        +vts_act_emo_end: Dict~str, ActionStatus~
+        +vts_act_curr: ActionStatus
+        +vts_param_smooth: Dict~str, float~
+        +q: Queue
+        +start()
+        +stop()
+        +vts_worker()
+        +play_worker()
+    }
+    
+    class ActionStatus {
+        +_map: Dict~str, ActionProtocol~
+        +from_config()
+        +update()
+    }
+    
+    AudioWithVTS --> ActionStatus
+```
 
-5. **测试和优化**：
-   - 测试动画冲突问题
-   - 优化参数变化幅度
-   - 优化口型同步精度
+### 工作流程
+
+```mermaid
+sequenceDiagram
+    participant VLM
+    participant Interface as VTSTTSInterface
+    participant Backend as TTS Backend
+    participant Player as AudioWithVTS
+    participant VTS as VTube Studio
+    
+    VLM->>Interface: on_speech([(emotion, content), ...])
+    Interface->>Backend: queue.put((emotion, content))
+    
+    loop Backend Worker
+        Backend->>Backend: emotion, content = queue.get()
+        Backend->>Backend: audio_fn = _generate_tts_single()
+        Backend->>Player: player.queue.put((emotion, content, audio_fn))
+    end
+    
+    loop Player Worker
+        Player->>Player: emotion, content, fn = queue.get()
+        Player->>Player: 触发 on_start 动作<br/>vts_act_curr.update(vts_act_emo_start[emotion])
+        Player->>Player: play_file_wait_async(fn)
+        Player->>Player: 触发 on_end 动作<br/>vts_act_curr.update(vts_act_emo_end[emotion])
+    end
+    
+    loop VTS Worker (fps Hz)
+        Player->>Player: t = time.time()
+        Player->>Player: 对每个 param: val = fn(t)
+        Player->>Player: 应用平滑
+        Player->>VTS: requestSetMultiParameterValue()
+    end
+```
+
+### 代码结构
+
+```python
+class AudioWithVTS:
+    """音频播放器 + VTube Studio 参数控制"""
+    
+    def __init__(self, vts: pyvts.vts, emotion_config: Dict, maxsize=1, subtitle_filename=None):
+        """
+        Args:
+            vts: pyvts.vts 实例
+            emotion_config: 情感配置字典
+            maxsize: 队列最大大小
+            subtitle_filename: 字幕文件路径（可选）
+        """
+        pass
+    
+    async def start(self) -> None:
+        """启动 worker"""
+        pass
+    
+    async def stop(self) -> None:
+        """停止 worker"""
+        pass
+    
+    async def vts_worker(self) -> None:
+        """VTS 参数更新循环（fps Hz）
+        
+        1. 计算每个参数的目标值：val = fn(time.time())
+        2. 应用平滑：smooth_val += (val - smooth_val) * min(1, smooth * fps)
+        3. 批量发送：requestSetMultiParameterValue()
+        """
+        pass
+    
+    async def play_worker(self) -> None:
+        """音频播放循环
+        
+        1. 从队列获取 (emotion, content, audio_fn)
+        2. 触发 on_start 动作：vts_act_curr.update(vts_act_emo_start[emotion])
+        3. 播放音频：play_file_wait_async(audio_fn)
+        4. 触发 on_end 动作：vts_act_curr.update(vts_act_emo_end[emotion])
+        """
+        pass
+```
+
+## 实现状态
+
+- [x] 验证 30Hz 更新频率足够流畅
+- [x] 验证 VTube Studio 不会自动插值
+- [x] 验证 InjectParameterDataRequest 可用
+- [x] ActionConstant 实现
+- [x] ActionLoop 实现
+- [x] ActionRand 实现
+- [x] ActionStatus 实现
+- [x] AudioWithVTS 实现
+- [x] VTSTTSInterface 实现
+- [ ] 更精确的口型同步（使用音素识别）
+- [ ] 更多预设情感动作
 
 ## 参考资料
 
-- VTube Studio API 文档
+- [VTube Studio API 文档](./VTubeStudioOfficialAPIDoc/)
+- [pyvts 库](./pyvts/)
 - Cubism Editor 教程
-- 第三方 VTube Studio Python 库（待查找）
+
+---
+
+文档完成。

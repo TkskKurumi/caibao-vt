@@ -91,7 +91,9 @@ async def main(yaml_fn: str):
                     print("Trimming Context {ctx_trim_ratio}")
                     context_manager.trim_by_round(ctx_trim_ratio)
 
-
+                print("Thinking", getattr(resp_msg, "reasoning_content", None))
+                print("Content ", resp_msg.content)
+                print("Tools   ", resp_msg.tool_calls)
                 context_manager.add_msg(ResponseMsg(resp_msg))
 
                 tool_tasks: List[Tuple[ChatCompletionMessageFunctionToolCall, asyncio.Task]] = []

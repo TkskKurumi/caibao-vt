@@ -122,7 +122,7 @@ class ActionStatus:
                     mn, mx = i["range"]
                     dn, dx = i["duration"]
                     for p in i["params"]:
-                        map[p] = ActionRand(mn, mx, dn, dx, i.get("interp_p", 1))
+                        map[p] = ActionRand(mn, mx, dn, dx, i.get("smooth", 1))
                 else:
                     raise TypeError(f"action type {action_type}")
             return cls(map)
@@ -230,7 +230,7 @@ class AudioWithVTS:
                 val = fn(t)
                 if (param not in self.vts_param_smooth):
                     self.vts_param_smooth[param] = val
-                self.vts_param_smooth[param] += (val-self.vts_param_smooth[param])*min(1, self.vts_smooth[param]*self.vts_fps)
+                self.vts_param_smooth[param] += (val-self.vts_param_smooth[param])*min(1, 1/self.vts_smooth[param]/self.vts_fps)
             params = list(self.vts_param_smooth.keys())
             values = list(self.vts_param_smooth.values())
             await self.vts.request(self.vts.vts_request.requestSetMultiParameterValue(params, values))
