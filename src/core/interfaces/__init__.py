@@ -7,6 +7,7 @@ from .heartbeat import HeatbeatInterface
 from .stt import STTInterface, STTMsg, STTBackend, STTSherpaNCNNBackend
 from .tts import TTSInterface, TTSBackend, IndexTTSAPIBackend
 from .vts_tts import VTSTTSInterface
+from .bili_danmaku_v2 import BiliDanmakuInterfaceV2
 __all__ = [
     "Interface",
     "BiliDanmakuInterface", "BiliDanmakuMsg", "BiliUserUniqueMsg",

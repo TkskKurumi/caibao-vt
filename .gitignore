@@ -7,3 +7,4 @@ __pycache__
 configs
 *.ps1
 *.txt
+.VSCodeCounter
